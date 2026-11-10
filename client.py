@@ -10,6 +10,7 @@ from tkinter import ttk
 PORT = 1010
 SERVER_HOST = "192.168.75.202"
 GAME_CODE_CHARACTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+MAX_CHAT_MESSAGE_LENGTH = 500
 
 
 class network_client:
@@ -83,6 +84,17 @@ class network_client:
             }
         )
 
+    def send_chat(self, game_id, message):
+        return self.request(
+            {
+                "action": "send_chat",
+                "game_id": game_id,
+                "message": message,
+                "token": self.token,
+                "player_id": self.player_id,
+            }
+        )
+
     def request(self, request):
         with socket.create_connection((self.host, self.port), timeout=5) as connection:
             connection.sendall((json.dumps(request) + "\n").encode("utf-8"))
@@ -116,6 +128,8 @@ class client_interface:
         self.menu_frame = None
         self.client_frame = None
         self.refresh_after_id = None
+        self.closing = False
+        self.logout_in_flight = False
 
         container = ttk.Frame(root, padding=16)
         self.container = container
@@ -221,35 +235,59 @@ class client_interface:
 
     def open_main_menu(self):
         self.login_frame.grid_remove()
+        if self.menu_frame:
+            self.menu_frame.destroy()
+            self.menu_frame = None
         if self.client_frame:
             self.client_frame.destroy()
             self.client_frame = None
         self.root.title("MathShips Main Menu")
-        self.root.geometry("390x330")
-        self.root.minsize(390, 300)
+        self.root.geometry("520x410")
+        self.root.minsize(480, 390)
         self.root.resizable(False, False)
-        self.status_label.configure(wraplength=360)
-        self.title_label.configure(text="MathShips Main Menu")
+        self.status_label.configure(wraplength=480)
+        self.title_label.configure(text="MathShips")
 
         self.menu_frame = ttk.Frame(self.container)
         self.menu_frame.grid(row=2, column=0, sticky="nsew")
         self.menu_frame.columnconfigure(0, weight=1)
-        ttk.Label(
-            self.menu_frame, text=f"Signed in as {self.api.username}"
-        ).grid(row=0, column=0, sticky="w", pady=(0, 10))
-        self.create_button = ttk.Button(
-            self.menu_frame, text="Create game", command=self.create_game
-        )
-        self.create_button.grid(row=1, column=0, sticky="ew", pady=(0, 10))
 
-        join_frame = ttk.Frame(self.menu_frame)
-        join_frame.grid(row=2, column=0, sticky="ew")
-        join_frame.columnconfigure(0, weight=1)
+        header = ttk.Frame(self.menu_frame)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 18))
+        header.columnconfigure(0, weight=1)
+        self.username_label = ttk.Label(
+            header,
+            text=self.api.username,
+            font=("Segoe UI", 16, "bold"),
+        )
+        self.username_label.grid(row=0, column=0, sticky="w")
+        self.logout_button = ttk.Button(
+            header, text="Log out", command=self.logout
+        )
+        self.logout_button.grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        create_card = ttk.LabelFrame(
+            self.menu_frame, text="Create a game", padding=14
+        )
+        create_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        create_card.columnconfigure(0, weight=1)
+        self.create_button = ttk.Button(
+            create_card, text="Create game", command=self.create_game
+        )
+        self.create_button.grid(row=0, column=0, sticky="ew")
+
+        join_card = ttk.LabelFrame(
+            self.menu_frame, text="Join a game", padding=14
+        )
+        join_card.grid(row=2, column=0, sticky="ew")
+        join_card.columnconfigure(0, weight=1)
         self.join_code = tk.StringVar()
-        self.join_entry = ttk.Entry(join_frame, textvariable=self.join_code, width=10)
+        self.join_entry = ttk.Entry(
+            join_card, textvariable=self.join_code, width=10, font=("Segoe UI", 12)
+        )
         self.join_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.join_button = ttk.Button(
-            join_frame, text="Join game", command=self.join_game
+            join_card, text="Join game", command=self.join_game
         )
         self.join_button.grid(row=0, column=1, sticky="ew")
         self.join_entry.bind("<Return>", lambda _event: self.join_button.invoke())
@@ -262,16 +300,16 @@ class client_interface:
             self.menu_frame.destroy()
             self.menu_frame = None
         self.root.title("MathShips Game")
-        self.root.geometry("440x510")
-        self.root.minsize(400, 460)
+        self.root.geometry("760x600")
+        self.root.minsize(640, 480)
         self.root.resizable(True, True)
-        self.status_label.configure(wraplength=390)
+        self.status_label.configure(wraplength=700)
         self.title_label.configure(text="MathShips")
 
         self.client_frame = ttk.Frame(self.container)
         self.client_frame.grid(row=2, column=0, sticky="nsew")
         self.client_frame.columnconfigure(0, weight=1)
-        self.client_frame.rowconfigure(3, weight=1)
+        self.client_frame.rowconfigure(2, weight=1)
 
         ttk.Label(
             self.client_frame,
@@ -291,17 +329,51 @@ class client_interface:
         )
         self.game_code_entry.grid(row=0, column=1, sticky="w")
 
-        ttk.Label(self.client_frame, text="Players in this game:").grid(
-            row=2, column=0, sticky="w"
+        game_body = ttk.Frame(self.client_frame)
+        game_body.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
+        game_body.columnconfigure(0, weight=1)
+        game_body.columnconfigure(1, weight=3)
+        game_body.rowconfigure(0, weight=1)
+
+        players_panel = ttk.LabelFrame(game_body, text="Players", padding=8)
+        players_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        players_panel.columnconfigure(0, weight=1)
+        players_panel.rowconfigure(0, weight=1)
+        self.player_list = tk.Listbox(players_panel, height=12)
+        self.player_list.grid(row=0, column=0, sticky="nsew")
+
+        chat_panel = ttk.LabelFrame(game_body, text="Game chat", padding=8)
+        chat_panel.grid(row=0, column=1, sticky="nsew")
+        chat_panel.columnconfigure(0, weight=1)
+        chat_panel.rowconfigure(0, weight=1)
+        self.chat_display = tk.Text(
+            chat_panel, height=16, wrap="word", state="disabled"
         )
-        self.player_list = tk.Listbox(self.client_frame, height=10)
-        self.player_list.grid(row=3, column=0, sticky="nsew", pady=(4, 8))
+        self.chat_display.grid(row=0, column=0, sticky="nsew")
+        chat_scrollbar = ttk.Scrollbar(
+            chat_panel, orient="vertical", command=self.chat_display.yview
+        )
+        chat_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.chat_display.configure(yscrollcommand=chat_scrollbar.set)
+        self.last_chat_message_id = 0
+
+        chat_input = ttk.Frame(chat_panel)
+        chat_input.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        chat_input.columnconfigure(0, weight=1)
+        self.chat_entry = ttk.Entry(chat_input)
+        self.chat_entry.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.chat_send_button = ttk.Button(
+            chat_input, text="Send", command=self.send_chat
+        )
+        self.chat_send_button.grid(row=0, column=1, sticky="e")
+        self.chat_entry.bind("<Return>", lambda _event: self.send_chat())
+
         self.quit_button = ttk.Button(
             self.client_frame,
             text="Quit to main menu",
             command=self.quit_to_main_menu,
         )
-        self.quit_button.grid(row=4, column=0, sticky="ew")
+        self.quit_button.grid(row=3, column=0, sticky="ew")
 
     def create_game(self):
         self.start_game_request("create")
@@ -315,9 +387,39 @@ class client_interface:
             return
         self.start_game_request("join", game_id)
 
+    def send_chat(self):
+        message = self.chat_entry.get().strip()
+        if not message:
+            return
+        if len(message) > MAX_CHAT_MESSAGE_LENGTH:
+            self.status.set(
+                f"Chat messages can be at most {MAX_CHAT_MESSAGE_LENGTH} characters."
+            )
+            return
+        if not self.api or not self.current_game_id:
+            return
+        self.chat_entry.configure(state="disabled")
+        self.chat_send_button.configure(state="disabled")
+        threading.Thread(
+            target=self.run_send_chat,
+            args=(self.api, self.current_game_id, message),
+            daemon=True,
+        ).start()
+
+    def run_send_chat(self, api, game_id, message):
+        try:
+            response = api.send_chat(game_id, message)
+        except OSError as error:
+            self.events.put(("server_unavailable", str(error)))
+        except RuntimeError as error:
+            self.events.put(("chat_error", game_id, str(error)))
+        else:
+            self.events.put(("chat_sent", game_id, response["messages"]))
+
     def start_game_request(self, action, game_id=None):
         self.create_button.configure(state="disabled")
         self.join_button.configure(state="disabled")
+        self.logout_button.configure(state="disabled")
         self.status.set("Creating game..." if action == "create" else "Joining game...")
         threading.Thread(
             target=self.run_game_request,
@@ -366,7 +468,14 @@ class client_interface:
         except RuntimeError as error:
             self.events.put(("players_error", game_id, str(error)))
         else:
-            self.events.put(("players_updated", game_id, response["players"]))
+            self.events.put(
+                (
+                    "players_updated",
+                    game_id,
+                    response["players"],
+                    response["messages"],
+                )
+            )
 
     def run_session_check(self, api):
         try:
@@ -382,13 +491,12 @@ class client_interface:
         api = self.api
         if not api:
             return
-        self.create_button.configure(state="disabled")
-        self.join_button.configure(state="disabled")
         self.status.set("Returning to main menu...")
         self.current_game_id = None
         self.open_main_menu()
         self.create_button.configure(state="disabled")
         self.join_button.configure(state="disabled")
+        self.logout_button.configure(state="disabled")
         threading.Thread(
             target=self.run_leave_game, args=(api,), daemon=True
         ).start()
@@ -426,11 +534,26 @@ class client_interface:
         self.set_auth_buttons("normal")
         self.status.set(message)
 
+    def logout(self):
+        api = self.api
+        if not api or self.logout_in_flight:
+            return
+        self.create_button.configure(state="disabled")
+        self.join_button.configure(state="disabled")
+        self.logout_button.configure(state="disabled")
+        self.status.set("Logging out...")
+        self.logout_in_flight = True
+        threading.Thread(
+            target=self.run_logout, args=(api,), daemon=True
+        ).start()
+
     def run_logout(self, api):
         try:
             api.logout()
-        except (OSError, RuntimeError) as error:
-            self.events.put(("logout_error", str(error)))
+        except OSError as error:
+            self.events.put(("server_unavailable", str(error)))
+        except RuntimeError as error:
+            self.events.put(("session_expired", str(error)))
         else:
             self.events.put(("logout_done",))
 
@@ -441,9 +564,16 @@ class client_interface:
             except queue.Empty:
                 break
 
+            if self.closing:
+                if event[0] in ("logout_done", "logout_error"):
+                    self.logout_in_flight = False
+                    self.root.destroy()
+                    return
+                continue
+
             if event[0] == "auth_success":
                 self.api = event[1]
-                self.status.set(f"Welcome, {self.api.username}.")
+                self.status.set("Choose create or join a game.")
                 self.password_entry.delete(0, "end")
                 self.open_main_menu()
             elif event[0] == "auth_error":
@@ -463,6 +593,7 @@ class client_interface:
                 self.open_client_page()
                 self.game_code.set(self.current_game_id)
                 self.update_players(response["players"])
+                self.update_chat(response["messages"])
                 action_text = "created" if action == "create" else "joined"
                 self.status.set(f"Game {self.current_game_id} {action_text}.")
             elif event[0] == "game_error":
@@ -471,10 +602,12 @@ class client_interface:
                 self.status.set(f"Game request failed: {event[1]}")
                 self.create_button.configure(state="normal")
                 self.join_button.configure(state="normal")
+                self.logout_button.configure(state="normal")
             elif event[0] == "players_updated":
                 self.refresh_in_flight = False
                 if self.client_frame and event[1] == self.current_game_id:
                     self.update_players(event[2])
+                    self.update_chat(event[3])
             elif event[0] == "players_error":
                 self.refresh_in_flight = False
                 if self.client_frame and event[1] == self.current_game_id:
@@ -483,18 +616,35 @@ class client_interface:
                     self.status.set(
                         f"Game unavailable. Returned to main menu: {event[2]}"
                     )
+            elif event[0] == "chat_sent":
+                if self.client_frame and event[1] == self.current_game_id:
+                    self.update_chat(event[2])
+                    self.chat_entry.configure(state="normal")
+                    self.chat_send_button.configure(state="normal")
+                    self.chat_entry.delete(0, "end")
+                    self.chat_entry.focus_set()
+            elif event[0] == "chat_error":
+                if self.client_frame and event[1] == self.current_game_id:
+                    self.chat_entry.configure(state="normal")
+                    self.chat_send_button.configure(state="normal")
+                    self.status.set(f"Chat failed: {event[2]}")
             elif event[0] == "session_checked":
                 self.refresh_in_flight = False
             elif event[0] == "leave_done":
                 if self.menu_frame:
                     self.create_button.configure(state="normal")
                     self.join_button.configure(state="normal")
+                    self.logout_button.configure(state="normal")
                     self.status.set("Returned to main menu.")
             elif event[0] == "logout_done":
-                self.set_auth_buttons("normal")
-                self.status.set("Logged out.")
+                self.logout_in_flight = False
+                self.return_to_login("Logged out.")
             elif event[0] == "logout_error":
-                self.set_auth_buttons("normal")
+                self.logout_in_flight = False
+                if self.menu_frame:
+                    self.create_button.configure(state="normal")
+                    self.join_button.configure(state="normal")
+                    self.logout_button.configure(state="normal")
                 self.status.set(f"Logout failed: {event[1]}")
 
         self.root.after(100, self.process_events)
@@ -506,11 +656,38 @@ class client_interface:
                 "end", f"{player['username']} ({player['player_id'][:8]})"
             )
 
+    def update_chat(self, messages):
+        if not messages or messages[-1]["id"] < self.last_chat_message_id:
+            return
+        self.last_chat_message_id = messages[-1]["id"]
+        self.chat_display.configure(state="normal")
+        self.chat_display.delete("1.0", "end")
+        for message in messages:
+            self.chat_display.insert(
+                "end", f"{message['username']}: {message['message']}\n"
+            )
+        self.chat_display.configure(state="disabled")
+        self.chat_display.see("end")
+
     def close(self):
-        if self.api:
-            threading.Thread(target=self.run_logout, args=(self.api,), daemon=True).start()
-            self.api = None
-        self.root.destroy()
+        if self.closing:
+            return
+        self.closing = True
+        api = self.api
+        self.api = None
+        if self.refresh_after_id:
+            self.root.after_cancel(self.refresh_after_id)
+            self.refresh_after_id = None
+        if self.logout_in_flight:
+            return
+        if api:
+            self.status.set("Logging out before closing...")
+            self.logout_in_flight = True
+            threading.Thread(
+                target=self.run_logout, args=(api,), daemon=True
+            ).start()
+        else:
+            self.root.destroy()
 
 
 if __name__ == "__main__":

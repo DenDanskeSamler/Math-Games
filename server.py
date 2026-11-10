@@ -13,6 +13,8 @@ from tkinter import ttk
 PORT = 1010
 GAME_CODE_CHARACTERS = string.ascii_uppercase + string.digits
 GAME_CODE_LENGTH = 4
+MAX_CHAT_MESSAGE_LENGTH = 500
+MAX_CHAT_MESSAGES = 100
 
 
 def get_local_network_addresses():
@@ -32,6 +34,8 @@ class server:
         self.host = host
         self.port = port
         self.games = {}
+        self.chat_messages = {}
+        self.next_chat_message_id = 1
         self._games_lock = threading.Lock()
         self._accounts_lock = threading.Lock()
         self._sessions_lock = threading.Lock()
@@ -125,7 +129,7 @@ class server:
         if username is None:
             return self.error_response("Please log in first.")
 
-        if action in ("create", "join", "players"):
+        if action in ("create", "join", "players", "send_chat"):
             player_id = request.get("player_id")
             if not self.is_valid_player_id(player_id):
                 return self.error_response("Invalid player window ID.")
@@ -135,7 +139,13 @@ class server:
                     game_id = self.new_game_id()
                     self.games[game_id] = {player_id: username}
                     players = self.format_players(self.games[game_id])
-                return {"ok": True, "game_id": game_id, "players": players}
+                    self.chat_messages[game_id] = []
+                return {
+                    "ok": True,
+                    "game_id": game_id,
+                    "players": players,
+                    "messages": [],
+                }
 
             game_id = request.get("game_id")
             if not isinstance(game_id, str):
@@ -144,18 +154,46 @@ class server:
             if not self.is_valid_game_id(game_id):
                 return self.error_response("Enter a valid four-character game code.")
 
+            message = None
+            if action == "send_chat":
+                message = request.get("message")
+                if not isinstance(message, str):
+                    return self.error_response("Enter a chat message.")
+                message = message.strip()
+                if (
+                    not message
+                    or len(message) > MAX_CHAT_MESSAGE_LENGTH
+                    or "\n" in message
+                    or "\r" in message
+                ):
+                    return self.error_response(
+                        f"Chat messages must be 1-{MAX_CHAT_MESSAGE_LENGTH} characters."
+                    )
+
             with self._games_lock:
                 players = self.games.get(game_id)
                 if players is None:
                     return self.error_response("No game exists with that code.")
                 if action == "join":
                     players[player_id] = username
-                elif player_id not in players:
+                elif players.get(player_id) != username:
                     return self.error_response("Join the game before viewing it.")
+                if action == "send_chat":
+                    messages = self.chat_messages.setdefault(game_id, [])
+                    messages.append(
+                        {
+                            "id": self.next_chat_message_id,
+                            "username": username,
+                            "message": message,
+                        }
+                    )
+                    self.next_chat_message_id += 1
+                    del messages[:-MAX_CHAT_MESSAGES]
                 return {
                     "ok": True,
                     "game_id": game_id,
                     "players": self.format_players(players),
+                    "messages": list(self.chat_messages.get(game_id, [])),
                 }
 
         return self.error_response("Unknown request.")
@@ -170,6 +208,7 @@ class server:
                     empty_games.append(game_id)
             for game_id in empty_games:
                 self.games.pop(game_id)
+                self.chat_messages.pop(game_id, None)
 
     def handle_auth(self, action, request):
         username = request.get("username")
