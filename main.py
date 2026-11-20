@@ -11,8 +11,8 @@ import pygame as pg
 if not __package__ and not getattr(sys, "frozen", False):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from sample_apps.arcade_api import ApiRequestError, api_request
-from sample_apps.SaveClicker.session_store import (
+from arcade_api import ApiRequestError, api_request
+from session_store import (
     SessionStoreError,
     clear_session,
     load_session,
